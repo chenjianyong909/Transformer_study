@@ -356,3 +356,44 @@ class BatchNorm1d(nn.Module):
         x_hat = gamma * x_hat + beta # 归一化后再缩放平移
 
         return x_hat
+
+# ============================================================
+# LayerNorm
+# ============================================================
+# 思路：不按"同一分布族"分组，而是按"同一个 token"分组——一个 token 的 D 个分量就是这一层在这处的所有神经元，
+# 它们协同表达同一个语义、是一个整体，应该一起归一化（所以叫"层"归一化），不管这 D 个分量是不是来自同一个 f。
+
+# 按照 D 进行归一化，那么就是 D 进入 S，N、L 不进 S。num_features = D，dim = -1。
+
+# 为什么 LayerNorm 里num_features参数的值是 D，而 BatchNorm 里是不进 S 的那一维 C？
+# 考虑一下μ、σ的计算方式：
+#   BatchNorm: 一个通道作为一组 = C组，每组有 N*H*W 个元素。 mean_c = (这 N·H·W 个值全部加起来) / (N·H·W); var_c = (1 / (N·H·W)) * Σ (x[n, c, h, w] - mean_c)²
+#   LayerNorm: 一个 token 作为一组 = N * L组， 每组有 D 个元素。 mean_d = (这 D 个值全部加起来) / D; var_d = (1 / D) * Σ (x[n, l, d] - mean_d)²
+#   这里需要注意，每一个token单独归一化，并且每一个token有D维，所以才是这么计算的，不要跟BatchNorm搞混了。
+# 根据上述的计算方式可以得知，num_features 的值不是以组数来判断， 而是组内的元素用的 f 是不是相同的。这样就很轻松可以得到BatchNorm中的num_features是C，LayerNorm中的num_features是D。
+
+class LayerNorm(nn.Module):
+    def __init__(self, num_features, eps=1e-5):
+        # LayerNorm 的 μ、σ 是每次前向传播现算，每一次算的都是同一个token，不存在训练和推理的差别，所以不需要保存，前向的时候重新计算就可以了。
+
+        super().__init__()
+
+        self.gamma = nn.Parameter(torch.ones(num_features)) # γ，缩放参数，初始化为1
+        self.beta = nn.Parameter(torch.zeros(num_features)) # β，平移参数，初始化
+        self.eps = eps # 分母加一个极小值，防止分母为0的情况
+
+    def forward(self, x: torch.Tensor):
+
+        # 训练和推理一致，就不需要分阶段了。
+        # x.shape = (N, L, D)
+        # 这里必须加 keepdim=True，不加的mean、var 形状是 (N, L)，而 x_hat 形状是 (N, L, D)，维度不匹配，无法广播。
+        # 所以统一的话BatchNorm里面的mean、var也加上keepdim=True，虽然不加也可以广播，但为了统一，还是加上。
+        mean = x.mean(dim=-1, keepdim=True) #  (N, L, 1) 谁进S，谁是1，因为只剩一个标量了，保存的值是对应的mean，一共 N*L 组就有 N*L 个标量
+        var = x.var(dim=-1, keepdim=True, unbiased=False) # (N, L, 1)
+
+        x_hat = (x - mean) / torch.sqrt(var + self.eps)
+
+        # (D,) * (N, L, D) → (N, L, D) * (N, L, D)
+        x_hat = self.gamma * x_hat + self.beta # (D,) → (N, L, D) 这个广播相当于把 D 复制 N*L 次。(D,) → (1, 1, D) → (N, L, D) “先阔维度，再补数值”
+
+        return x_hat
