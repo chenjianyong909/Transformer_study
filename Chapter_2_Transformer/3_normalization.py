@@ -499,3 +499,70 @@ class LayerNorm(nn.Module):
         x_hat = self.gamma * x_hat + self.beta # (D,) → (N, L, D) 这个广播相当于把 D 复制 N*L 次。(D,) → (1, 1, D) → (N, L, D) “先阔维度，再补数值”
 
         return x_hat
+
+# ============================================================
+# RMSNorm
+# ============================================================
+# 回顾一下归一化的目标：
+#   ① 缩尺度：防止进入激活函数后梯度消失或者爆炸（例如 Sigmoid、Tanh 的饱和区）
+#   ② 去中心：将输入变成均值为0的分布，相当于正负均衡。如果没有的话，梯度更新会导致所有的都朝着一个方向更新，各参数无法各自朝自己的最优方向调整。
+
+# 首先看一下LayerNorm的归一化公式： 
+#   y = γ · (x - μ) / sqrt(σ² + eps) + β
+#   (a) 减均值 μ；(b) 除以标准差 σ；(c) 仿射 γ、β
+# 问题：在LLM中这三件事是不是都必须做？
+#   LLM中，对于参数和嵌入的初始化都是围绕0的，参数和嵌入的均值都是0。后续的注意力（加权平均）以及残差连接也会把分布控制住，训练过程又倾向于把均值拉回 0 附近（均值偏离大时梯度传不好、收敛更慢）。
+#   针对于这个现象，可以把LayerNorm的归一化公式简化为：
+#       y = γ · x / sqrt(σ² + eps)
+#   把对于均值有关的操作都省略掉，这样减少了不必要的计算和参数。这里要注意，σ 的计算也是依赖 x - μ, 所以将对均值有关的计算都省略掉后的公式变为：
+#       y = γ · x / sqrt(mean(x²) + eps)
+#   这个就是RMSNorm的归一化公式。RMSNorm的归一化公式中没有减均值 μ 的操作，所以 RMSNorm 只做了缩尺度，没有去中心。
+#
+# 实验证明，去掉去中心这一步，性能影响很小。
+#
+# （1）论文《Root Mean Square Layer Normalization》
+#       链接： https://arxiv.org/abs/1910.07467
+#       核心思路：作者的假设是，LayerNorm中的“re-centering invariance”（即去中心不变性）可能是可以舍弃的。他们直接移除了LayerNorm中的减均值操作，提出了RMSNorm。
+#       实验验证：他们在机器翻译、图像分类等多个任务上进行了广泛实验，对比RMSNorm和LayerNorm的性能。
+#       关键结论：实验结果显示，RMSNorm达到了与LayerNorm“comparable”（可比的/相当的）性能，同时运行时间减少了7%到64%。
+#       论证逻辑：如果“去中心”是必要的，移除它后性能应该会显著下降。但实验表明性能几乎不变，这从反面证明了“去中心”在实践中的冗余性。
+#
+# （2）论文《HybridNorm: Towards Stable and Efficient Transformer Training via Hybrid Normalization》
+#       链接：https://proceedings.neurips.cc/paper_files/paper/2025/file/23a1e7765b22c7e2ffdabf2e6b5dbc44-Paper-Conference.pdf
+#       核心思路：通过数学推导，证明LayerNorm和RMSNorm的梯度在理论上没有本质区别。
+#       理论证明：论文证明了LayerNorm的梯度与RMSNorm的梯度，其范数（norm）仅相差一个常数因子。这意味着两者的优化动力学（optimization dynamics）在理论上非常相似。
+#       实验佐证：在550M参数模型、400B tokens的受控对比中，RMSNorm和LayerNorm的训练损失几乎完全相同，仅相差0.0008（RMSNorm: 2.7631 vs LayerNorm: 2.7639），这在LLM规模下被视为可忽略的差异。
+#       论证逻辑：理论上，LayerNorm 和 RMSNorm 的梯度范数只差一个常数因子；实验上，去掉去中心后，训练 loss 几乎不变。两条证据共同说明：去中心对训练过程本身影响很小。
+#       (loss 是下一个 token 预测的交叉熵损失，衡量模型预测的 token 分布和真实 token 之间的差距，loss 越小说明预测越准。两个 loss 基本没差别，说明去掉去中心对训练效果影响很小。)
+
+# （3）论文《Geometric Interpretation of Layer Normalization and a Comparative Analysis with RMSNorm》
+#       链接：https://aclanthology.org/2026.findings-eacl.20/
+#       核心思路：从几何角度解释 LayerNorm 的"去中心"操作，并观测 LLM 的隐藏表示是否真的需要这一步。
+#       几何解释：把一个 token 的向量 x 拆成两部分——公共偏移部分（每个分量都等于均值 μ，即 [μ, μ, ..., μ]）和波动部分（x - μ，即各分量相对均值的差异）。
+#                去中心做的事，就是把"公共偏移部分"切掉，只保留"波动部分"。而"公共偏移"恰好沿着均匀向量 [1, 1, ..., 1] 的方向，所以也叫"移除均匀向量方向的分量"。
+#       关键观测：LLM 的隐藏表示天然与均匀向量正交。"与均匀向量正交"的意思是：
+#                token 的 D 维向量 x 与均匀向量 u = [1, 1, ..., 1] 做内积 = x_1 + x_2 + ... + x_D = D · μ，正交即内积为 0，所以 μ ≈ 0，也就是每个 token 的 D 个分量之和 ≈ 0。
+#                相当于在训练过程中本身偏移就被模型自己调整好了，不需要再去中心了。
+#       论证逻辑：LayerNorm 的"去中心"在几何上就是移除公共偏移，而 LLM 的表示本来就不含这个分量，所以这一步在机制上是多余的。
+
+class RMSNorm(nn.Module):
+    def __init__(self, num_features, eps=1e-5):
+        # 都跟 LayerNorm 差不多，多余的注释就不写了
+
+        super().__init__()
+
+        self.gamma = nn.Parameter(torch.ones(num_features)) # γ，缩放参数，初始化为1
+
+        self.eps = eps # 分母加一个极小值，防止分母为0的情况
+
+    def forward(self, x: torch.Tensor):
+
+        # 训练和推理一致，就不需要分阶段了。
+        # x.shape = (N, L, D)
+        mean_x2 = (x ** 2).mean(dim=-1, keepdim=True) #  (N, L, 1)
+
+        x_hat = x / torch.sqrt(mean_x2 + self.eps)
+
+        x_hat = self.gamma * x_hat 
+
+        return x_hat
