@@ -185,8 +185,6 @@ print("因果自注意力输出：", output2.shape)
 print("因果掩码：")
 print(DotProductAttention.causal_mask(L, L).int())
 
-
-
 # 测试 Cross-Attention（交叉注意力）
 # 模拟一个 Batch 中有 2 个样本，每个样本包含 X、Y 两组输入序列
 
@@ -203,12 +201,7 @@ Y = torch.randn(B, L_k, d_modelk)  # (2, 5, 8)
 
 # 初始化交叉注意力模型
 # 将 Q、K 投影到 4 维，将 V 投影到 6 维
-cross_model = CrossAttention(
-    d_modelq=8,
-    d_modelk=8,
-    d_k=4,
-    d_v=6
-)
+cross_model = CrossAttention(d_modelq=8, d_modelk=8, d_k=4, d_v=6)
 
 # 前向传播：Q 来自 X，K、V 来自 Y
 cross_output = cross_model(X, Y)
