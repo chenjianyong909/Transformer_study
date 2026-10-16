@@ -32,27 +32,20 @@ class DotProductAttention(nn.Module):
         # 3. Mask（可选），通过 is_causal 判断是否使用因果掩码
         if is_causal:
             # 调用 causal_mask() 生成布尔掩码矩阵，形状为 (L_q, L_k)
-            mask = self.causal_mask(
-                Q.size(1), K.size(1),
-                start_pos=start_pos,
-                device=Q.device
-            )
+            mask = self.causal_mask(Q.size(1), K.size(1), start_pos=start_pos, device=Q.device)
 
             # masked_fill(condition, value)：将 condition 为 True 的位置替换成 value，其余位置保持不变
             # ~mask 表示布尔取反，因此将原本不允许关注的位置设置为 -inf，使其 Softmax 权重为 0
             attention_scores = attention_scores.masked_fill(~mask, float("-inf"))
 
-        # 另一种实现方法：构建 Mask 时将允许关注的位置设为 0，需要遮挡的位置设为 -inf
-        # 然后直接执行 attention_scores + mask，不需要再使用 masked_fill()
+        # 另一种实现方法：构建 Mask 时将允许关注的位置设为 0，需要遮挡的位置设为 -inf。然后直接执行 attention_scores + mask，不需要再使用 masked_fill()
 
-        # 4. Softmax 归一化
-        # attention_scores.shape = (B, L_q, L_k)，每一行表示一个 Query 对所有 Key 的匹配分数
+        # 4. Softmax 归一化。attention_scores.shape = (B, L_q, L_k)，每一行表示一个 Query 对所有 Key 的匹配分数
         # 因此沿 L_k 维度归一化，即 dim=-1，使每个 Query 对所有 Key 的注意力权重之和为 1
         attn_weights = F.softmax(attention_scores, dim=-1)
 
         # 5. 根据注意力权重，对 V 进行加权求和
-        output = attn_weights @ V
-        # (B, L_q, L_k) @ (B, L_k, D_v) -> (B, L_q, D_v)
+        output = attn_weights @ V # (B, L_q, L_k) @ (B, L_k, D_v) -> (B, L_q, D_v)
 
         return output
 
