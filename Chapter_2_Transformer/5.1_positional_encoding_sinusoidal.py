@@ -42,10 +42,8 @@ class SinusoidalPositionalEncoding(nn.Module):
         pe[:, 1::2] = cos # 偶数做cos
 
         # 将PE注册为buffer，这样在模型保存和加载时也会被保存（推理时能用）
-        # 什么时候用register_buffer：张量是模型预先算好的常量，
-        # 不想每次前向推理重复计算，需要跟着模型保存加载、自动切换CPU/GPU，但是不需要训练更新。
-        # 以PE举例：PE在__init__一次性算完。如果不注册buffer，保存模型时PE不会被存下来，
-        # 下次加载模型就丢失PE，必须重新计算；同时model.to()不会自动移动普通self.pe到GPU。
+        # 什么时候用register_buffer：张量是模型预先算好的常量，不想每次前向推理重复计算，需要跟着模型保存加载、自动切换CPU/GPU，但是不需要训练更新。
+        # 以PE举例：PE在__init__一次性算完。如果不注册buffer，保存模型时PE不会被存下来，下次加载模型就丢失PE，必须重新计算；同时model.to()不会自动移动普通self.pe到GPU。
         # 不能用Parameter：会计算梯度，训练会篡改固定PE的值。
         self.register_buffer('pe', pe)
 
